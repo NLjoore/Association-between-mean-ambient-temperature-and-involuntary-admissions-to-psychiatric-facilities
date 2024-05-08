@@ -1,0 +1,90 @@
+library(mgcv)
+library(gratia)
+library(readr)
+
+#Uploaded data files
+"Name_dataset" <- read_excel("Name_excel_file") #all variables were set to 'double' or 'numerical'
+
+View("Name_dataset")
+
+#Variable assignment
+response <- "Name_dataset"$"Name_involuntary_admissions_variable"
+predictor <- "Name_dataset"$"Name_meteorological_variable"
+
+#GAM model with summary statistics
+GAMmodel <- gam(response ~ s(predictor, k = 20 #dependent of gam.check results), 
+                             data = "Name_dataset", family = quasipoisson(), method = "REML"))
+summary(GAMmodel)
+
+#Plot of the resulted smooth function
+plot(GAMmodel, xlab = "Meteorological variable", ylab = "Linear value of the smooth function")
+abline(h = 0, col = "red", lty = 2) #reference line on y = 0
+
+
+#GAM summary only returns adj. R squared, so R-squared/variance explained has to be calculated
+summary_result <- summary(GAMmodel)
+adjusted_R_squared <- summary_result$r.sq
+population_size <- nrow("Name_dataset")
+edf_smooth <- summary_result$edf
+R_squared <- 1 - ((1 - adjusted_R_squared) * (population_size - 1)) / 
+  (population_size - edf_smooth - 1)
+cat("Calculated R-squared:", R_squared, "\n")
+variance_explained <- R_squared*100
+cat(variance_explained, "%", "\n")
+
+#Diagnostic plots
+residuals <- residuals(GAMmodel)
+qqnorm(residuals, main = "QQ-plot with quasi-Poisson assumption")
+qqline(residuals, col = "red")
+hist(residuals, main = "Histogram of residuals", xlab = "Values of residuals", 
+     col = "lightblue", border = "black", breaks = 500)
+
+#Check if the model's df-potential is high enough
+gam.check(GAMmodel)
+
+#Plot for model results with Involuntary Admissions on y-axis
+y_values = c(0.4,0.8)
+new_data <- data.frame(predictor = seq(min(predictor), max(predictor), length.out = 21549))
+predicted_values <- predict(GAMmodel, newdata = new_data, type = "response", se.fit = TRUE)
+plot(predictor, response, pch = NA, col = "blue", main = "", xlab = "Meteorological variable", ylab = "Involuntary admissions", ylim = y_values)
+lines(new_data$predictor, predicted_values$fit, col = "black", lw = 2)
+lines(new_data$predictor, predicted_values$fit - 1.96 * predicted_values$se.fit, col = "black", lty = 2)
+lines(new_data$predictor, predicted_values$fit + 1.96 * predicted_values$se.fit, col = "black", lty = 2)
+abline(h = 0.64, col = "red", lty = 2) #mean value of meteorological variable in dataset
+
+#Graph for estimated lambda values with the 95% confidence interval per (1 degree Celsius) temperature bin
+#Bins with an involuntary admissions mean of '0' are excluded, because the glm doesn't function with zero-values
+library(tidyverse)
+library(broom)
+breaks <- seq(min(MeanTemp), max(MeanTemp) + 1, by = 1)
+MeanTemp_binned <- cut(MeanTemp, breaks, labels = FALSE, include.lowest = TRUE)
+View(MeanTemp_binned)
+df <- data.frame(IBS = "Name_dataset"$"Name_involuntary_admissions_variable",
+                 MeanTemp = "Name_dataset"$"Name_temperature_variable",
+                 MeanTemp_binned)
+filtered_df <- df %>%
+  group_by(MeanTemp_binned) %>%
+  filter(mean(IBS) != 0)
+fit_list <- lapply(unique(filtered_df$MeanTemp_binned), function(bin) {
+  subset_data <- filtered_df[filtered_df$MeanTemp_binned == bin, ]
+  fit <- glm(IBS ~ 1, data = subset_data, family = poisson)
+  return(tidy(fit, conf.int = TRUE) %>%
+           mutate(bin = bin))
+})
+lambda_ci_df <- bind_rows(fit_list) %>%
+  mutate(
+    lower_ci = exp(estimate - 1.96 * std.error),
+    upper_ci = exp(estimate + 1.96 * std.error),
+    estimate = exp(estimate)
+  ) %>%
+  arrange(bin)
+View(lambda_ci_df)
+y_limits = c(0,1.5)
+ggplot(lambda_ci_df, aes(x = bin, y = estimate)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = lower_ci, ymax = upper_ci), width = 0.2) +
+  labs(title = "",
+       x = "Temperature Bin",
+       y = "Estimated Lambda for involuntary admissions cases") +
+  scale_x_continuous(breaks = seq(min(lambda_ci_df$bin), max(lambda_ci_df$bin), by = 1)) +
+  scale_y_continuous(limits = y_limits)
